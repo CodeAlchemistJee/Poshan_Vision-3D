@@ -8,7 +8,11 @@ load_dotenv()
 SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Create the connection engine
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,   # Pings the database to ensure the connection is active
+    pool_recycle=300      # Discards connections older than 5 minutes
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # This Base class will be used to create our tables
