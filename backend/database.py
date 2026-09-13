@@ -1,24 +1,20 @@
-import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
+import os
 from dotenv import load_dotenv
 
-# Load the secret URL from the .env file
+# Load environment variables
 load_dotenv()
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Create the connection engine
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,   # Pings the database to ensure the connection is active
-    pool_recycle=300      # Discards connections older than 5 minutes
-)
+# Grab the Neon connection URL from Render's environment
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Connect to the database with pool_pre_ping to prevent sleep disconnects
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# This Base class will be used to create our tables
 Base = declarative_base()
 
-# Dependency to get a database session for each request
 def get_db():
     db = SessionLocal()
     try:
