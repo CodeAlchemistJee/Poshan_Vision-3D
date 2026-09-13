@@ -2,5 +2,6 @@ fastapi
 uvicorn
 sqlalchemy
 psycopg2-binary
-python-dotenv
-pydantic
+python-multipart
+opencv-python-headless
+mediapipe==0.10.11
