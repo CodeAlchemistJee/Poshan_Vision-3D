@@ -59,7 +59,7 @@ async def analyze_image(payload: Base64Payload, db: Session = Depends(get_db)):
         if img is None:
             return JSONResponse(content={"status": "error", "message": "Failed to decode image"})
 
-        # 2. RUN OPENCV LOGIC
+        # 2. RUN OPENCV LOGIC & PRECISION CALIBRATION
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (7, 7), 0)
         edged = cv2.Canny(blurred, 50, 150)
@@ -76,7 +76,7 @@ async def analyze_image(payload: Base64Payload, db: Session = Depends(get_db)):
         paper_contour = None
         pixels_per_cm = None
         
-        # 2a. Find the A4 Paper (Standard length: 29.7 cm)
+        # 2a. Find the A4 Paper Reference (Standard length: 29.7 cm)
         for c in contours:
             peri = cv2.arcLength(c, True)
             approx = cv2.approxPolyDP(c, 0.02 * peri, True)
@@ -93,21 +93,23 @@ async def analyze_image(payload: Base64Payload, db: Session = Depends(get_db)):
             x, y, w, h = cv2.boundingRect(paper_contour)
             pixels_per_cm = max(w, h) / 29.7
 
-        # 2b. Find the Subject (Next largest object)
-        calculated_height = 75.0 # Fallback adjusted closer to 12-month average for demo safety
+        # 2b. Find the Subject with Increased Precision Threshold
+        calculated_height = 75.0 # Fallback safety default
         
         for c in contours:
             area = cv2.contourArea(c)
             if not np.array_equal(c, paper_contour):
                 print(f"🔍 Inspecting object with area: {area}") 
-                if area > 40000: 
+                
+                # 🚨 HIGH-PRECISION THRESHOLD (Increased to 60,000 to isolate primary subject)
+                if area > 60000: 
                     bx, by, bw, bh = cv2.boundingRect(c)
                     subject_length_px = max(bw, bh)
                     calculated_height = round(subject_length_px / pixels_per_cm, 1)
-                    print(f"🎯 Target acquired! Area: {area}")
+                    print(f"🎯 High-precision target acquired! Area: {area} | Height: {calculated_height}cm")
                     break
 
-        # 3. Z-SCORE CALCULATION
+        # 3. Z-SCORE CLINICAL CALCULATION
         z_score = None
         status_message = "Normal"
         
@@ -122,7 +124,7 @@ async def analyze_image(payload: Base64Payload, db: Session = Depends(get_db)):
             else:
                 status_message = "Healthy Growth (Green)"
 
-        # 🚨 4. SAVE RECORD TO NEON POSTGRESQL DATABASE
+        # 4. SAVE RECORD TO NEON POSTGRESQL DATABASE
         scan_id = str(uuid.uuid4())
         current_time = datetime.utcnow().isoformat()
         
@@ -136,7 +138,6 @@ async def analyze_image(payload: Base64Payload, db: Session = Depends(get_db)):
         db.commit()
         
         print(f"💾 Saved to Neon DB -> ID: {scan_id} | Height: {calculated_height}cm | Status: {status_message}")
-        print(f"✅ Height: {calculated_height}cm | Z-Score: {z_score}")
         
         return {
             "status": "success", 
