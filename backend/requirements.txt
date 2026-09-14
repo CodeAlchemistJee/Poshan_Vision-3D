@@ -1,9 +1,10 @@
 fastapi
 uvicorn
+pydantic
 sqlalchemy
 psycopg2-binary
-python-multipart
 opencv-python-headless
 numpy
 python-dotenv
-mediapipe
+mediapipe==0.10.9
+protobuf==3.20.3
