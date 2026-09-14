@@ -1,10 +1,11 @@
-from fastapi import FastAPI, Depends, File, UploadFile
+from fastapi import FastAPI, Depends
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 import cv2
 import numpy as np
+import base64
 
 # Import our database connection and models
 from database import engine, Base, get_db
@@ -29,22 +30,26 @@ class ScanData(BaseModel):
     status: str
     timestamp: str
 
+# 🚨 NEW: Model for the incoming Base64 JSON payload
+class Base64Payload(BaseModel):
+    image_base64: str
+
 @app.get("/")
 def home():
     return {"message": "Poshan-Vision API is running and Cloud DB is active!"}
 
 @app.post("/api/analyze")
-async def analyze_image(file: UploadFile = File(...)):
+async def analyze_image(payload: Base64Payload):
     try:
-        print(f"📸 Received image for analysis: {file.filename}")
+        print("📸 Received Base64 JSON image payload for analysis...")
         
-        # 1. Read the incoming image from the mobile app
-        contents = await file.read()
-        nparr = np.frombuffer(contents, np.uint8)
+        # 1. Decode the text string back into bytes, then into an OpenCV image
+        image_bytes = base64.b64decode(payload.image_base64)
+        nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
         if img is None:
-            return JSONResponse(content={"status": "error", "message": "Invalid image format"})
+            return JSONResponse(content={"status": "error", "message": "Failed to decode image"})
 
         # 2. RUN OPENCV LOGIC HERE 
         # -----------------------------------------------------------------
