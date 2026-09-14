@@ -8,6 +8,7 @@ import numpy as np
 import base64
 import uuid
 from datetime import datetime
+import mediapipe as mp
 
 from database import engine, Base, get_db
 import models
@@ -30,28 +31,30 @@ class ScanData(BaseModel):
     status: str
     timestamp: str
 
-# Payload to accept image, age, and gender from the mobile app
 class Base64Payload(BaseModel):
     image_base64: str
     age_months: int
     gender: str
 
-# WHO Reference Table: Age in months -> Gender -> (Median Height cm, Standard Deviation)
 WHO_HEIGHT_REF = {
     12: {"M": (75.7, 2.6), "F": (74.0, 2.5)},
     24: {"M": (87.1, 3.2), "F": (85.7, 3.2)}
 }
 
+# Initialize MediaPipe Pose
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(static_image_mode=True, model_complexity=1, enable_segmentation=False)
+
 @app.get("/")
 def home():
-    return {"message": "Poshan-Vision API is running and Cloud DB is active!"}
+    return {"message": "Poshan-Vision API with MediaPipe Pose & Confidence Scoring is active!"}
 
 @app.post("/api/analyze")
 async def analyze_image(payload: Base64Payload, db: Session = Depends(get_db)):
     try:
-        print(f"📸 Analyzing payload for {payload.age_months}-month old {payload.gender}...")
+        print(f"📸 Processing advanced AI measurement for {payload.age_months}-month old {payload.gender}...")
         
-        # 1. Decode image
+        # 1. Decode Base64 Image
         image_bytes = base64.b64decode(payload.image_base64)
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -59,72 +62,104 @@ async def analyze_image(payload: Base64Payload, db: Session = Depends(get_db)):
         if img is None:
             return JSONResponse(content={"status": "error", "message": "Failed to decode image"})
 
-        # 2. RUN OPENCV LOGIC & PRECISION CALIBRATION
+        h_img, w_img, _ = img.shape
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # 2. Image Quality & Lighting Check (Laplacian Variance)
+        blur_score = cv2.Laplacian(gray, cv2.CV_64F).var()
+        avg_brightness = np.mean(gray)
+        
+        retake_reasons = []
+        if blur_score < 80:
+            retake_reasons.append("Image is blurry. Please hold steady.")
+        if avg_brightness < 50:
+            retake_reasons.append("Lighting is insufficient. Move to a brighter area.")
+
+        # 3. OpenCV A4 Paper Detection & Calibration Pipeline
         blurred = cv2.GaussianBlur(gray, (7, 7), 0)
         edged = cv2.Canny(blurred, 50, 150)
-        edged = cv2.dilate(edged, None, iterations=1)
-        edged = cv2.erode(edged, None, iterations=1)
-
         contours, _ = cv2.findContours(edged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        if not contours:
-            return JSONResponse(content={"status": "error", "message": "No objects detected in image"})
-
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
-
         paper_contour = None
         pixels_per_cm = None
-        
-        # 2a. Find the A4 Paper Reference (Standard length: 29.7 cm)
-        for c in contours:
-            peri = cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-            
-            if len(approx) == 4 and cv2.contourArea(c) > 5000:
-                paper_contour = c
-                x, y, w, h = cv2.boundingRect(c)
-                paper_length_px = max(w, h)
-                pixels_per_cm = paper_length_px / 29.7
-                break
-                
-        if pixels_per_cm is None and len(contours) > 0:
-            paper_contour = contours[0]
-            x, y, w, h = cv2.boundingRect(paper_contour)
-            pixels_per_cm = max(w, h) / 29.7
+        a4_detected = False
 
-        # 2b. Find the Subject with Increased Precision Threshold
-        calculated_height = 75.0 # Fallback safety default
-        
-        for c in contours:
-            area = cv2.contourArea(c)
-            if not np.array_equal(c, paper_contour):
-                print(f"🔍 Inspecting object with area: {area}") 
-                
-                # 🚨 HIGH-PRECISION THRESHOLD (Increased to 60,000 to isolate primary subject)
-                if area > 60000: 
-                    bx, by, bw, bh = cv2.boundingRect(c)
-                    subject_length_px = max(bw, bh)
-                    calculated_height = round(subject_length_px / pixels_per_cm, 1)
-                    print(f"🎯 High-precision target acquired! Area: {area} | Height: {calculated_height}cm")
+        if contours:
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)
+            for c in contours:
+                peri = cv2.arcLength(c, True)
+                approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+                if len(approx) == 4 and cv2.contourArea(c) > 3000:
+                    paper_contour = c
+                    x, y, w, h = cv2.boundingRect(c)
+                    pixels_per_cm = max(w, h) / 29.7
+                    a4_detected = True
                     break
 
-        # 3. Z-SCORE CLINICAL CALCULATION
+        if not a4_detected:
+            retake_reasons.append("A4 sheet is partially hidden or missing.")
+            pixels_per_cm = 25.0 # Safe fallback ratio
+
+        # 4. MediaPipe Pose Validation & Landmark Extraction
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        pose_results = pose.process(img_rgb)
+        
+        body_detected = False
+        posture_valid = True
+        calculated_height = 75.0
+
+        if pose_results.pose_landmarks:
+            body_detected = True
+            landmarks = pose_results.pose_landmarks.landmark
+            
+            # Extract key joints (Shoulders, Hips, Knees, Ankles)
+            left_ankle = landmarks[mp_pose.PoseLandmark.LEFT_ANKLE]
+            right_ankle = landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE]
+            left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
+            right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+            left_knee = landmarks[mp_pose.PoseLandmark.LEFT_KNEE]
+            right_knee = landmarks[mp_pose.PoseLandmark.RIGHT_KNEE]
+
+            # Visibility checks
+            if left_ankle.visibility < 0.5 or right_ankle.visibility < 0.5:
+                retake_reasons.append("Feet are not fully visible.")
+                posture_valid = False
+
+            # Check for bent knees (vertical alignment comparison)
+            if abs(left_knee.y - (left_shoulder.y + left_ankle.y)/2) > 0.15:
+                retake_reasons.append("Knees appear bent. Ensure legs are straight.")
+                posture_valid = False
+
+            # Calculate height using ankle-to-shoulder pixel span mapped to A4 calibration
+            body_min_y = min(left_shoulder.y, right_shoulder.y) * h_img
+            body_max_y = max(left_ankle.y, right_ankle.y) * h_img
+            body_height_px = abs(body_max_y - body_min_y)
+            
+            if body_height_px > 100:
+                calculated_height = round(body_height_px / pixels_per_cm, 1)
+        else:
+            retake_reasons.append("Please move the child into the frame. Body not detected.")
+            posture_valid = False
+
+        # 5. Compute Confidence Score (0–100)
+        confidence = 100
+        if not a4_detected: confidence -= 30
+        if not body_detected: confidence -= 40
+        if not posture_valid: confidence -= 20
+        if blur_score < 80 or avg_brightness < 50: confidence -= 15
+        confidence = max(0, min(100, confidence))
+
+        # 6. WHO Z-Score Stunting Calculation
         z_score = None
         status_message = "Normal"
-        
         if payload.age_months in WHO_HEIGHT_REF:
             median, sd = WHO_HEIGHT_REF[payload.age_months][payload.gender]
             z_score = round((calculated_height - median) / sd, 2)
-            
-            if z_score < -3:
-                status_message = "Severe Stunting (Red Alert)"
-            elif z_score < -2:
-                status_message = "Moderate Stunting (Yellow Alert)"
-            else:
-                status_message = "Healthy Growth (Green)"
+            if z_score < -3: status_message = "Severe Stunting (Red Alert)"
+            elif z_score < -2: status_message = "Moderate Stunting (Yellow Alert)"
+            else: status_message = "Healthy Growth (Green)"
 
-        # 4. SAVE RECORD TO NEON POSTGRESQL DATABASE
+        # 7. Neon Database Persistence
         scan_id = str(uuid.uuid4())
         current_time = datetime.utcnow().isoformat()
         
@@ -137,33 +172,29 @@ async def analyze_image(payload: Base64Payload, db: Session = Depends(get_db)):
         db.add(db_scan)
         db.commit()
         
-        print(f"💾 Saved to Neon DB -> ID: {scan_id} | Height: {calculated_height}cm | Status: {status_message}")
+        print(f"💾 Saved to Neon DB -> Height: {calculated_height}cm | Confidence: {confidence}%")
         
         return {
-            "status": "success", 
+            "status": "success",
             "height_cm": calculated_height,
             "z_score": z_score,
-            "health_status": status_message
+            "health_status": status_message,
+            "confidence_score": confidence,
+            "retake_required": len(retake_reasons) > 0,
+            "retake_instructions": retake_reasons
         }
         
     except Exception as e:
-        print(f"❌ Error processing image: {e}")
+        print(f"❌ Error processing advanced AI pipeline: {e}")
         return JSONResponse(content={"status": "error", "message": str(e)})
 
 @app.post("/api/sync")
 async def sync_data(scans: list[ScanData], db: Session = Depends(get_db)):
-    print("\n" + "="*50)
-    print(f"🚀 INCOMING SYNC: Processing {len(scans)} scans from mobile app...")
-    
     saved_count = 0
     for scan in scans:
-        existing_scan = db.query(models.DBScan).filter(models.DBScan.id == scan.id).first()
-        if not existing_scan:
-            db_scan = models.DBScan(id=scan.id, height_cm=scan.height_cm, status=scan.status, timestamp=scan.timestamp)
-            db.add(db_scan)
+        existing = db.query(models.DBScan).filter(models.DBScan.id == scan.id).first()
+        if not existing:
+            db.add(models.DBScan(id=scan.id, height_cm=scan.height_cm, status=scan.status, timestamp=scan.timestamp))
             saved_count += 1
-            print(f" ✅ Saved to Cloud DB -> Baby ID: {scan.id} | Height: {scan.height_cm}cm")
-            
     db.commit()
-    print("="*50 + "\n")
     return {"message": "Sync Successful", "scans_processed": saved_count}
