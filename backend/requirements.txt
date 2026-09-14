@@ -4,5 +4,4 @@ sqlalchemy
 psycopg2-binary
 python-multipart
 opencv-python-headless
-mediapipe==0.10.11
-python-dotenv
+numpy
