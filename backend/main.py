@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 import cv2
 import numpy as np
 import base64
+import uuid
+from datetime import datetime
 
 from database import engine, Base, get_db
 import models
@@ -28,7 +30,7 @@ class ScanData(BaseModel):
     status: str
     timestamp: str
 
-# 🚨 Updated Payload to accept age and gender from the mobile app
+# Payload to accept image, age, and gender from the mobile app
 class Base64Payload(BaseModel):
     image_base64: str
     age_months: int
@@ -45,7 +47,7 @@ def home():
     return {"message": "Poshan-Vision API is running and Cloud DB is active!"}
 
 @app.post("/api/analyze")
-async def analyze_image(payload: Base64Payload):
+async def analyze_image(payload: Base64Payload, db: Session = Depends(get_db)):
     try:
         print(f"📸 Analyzing payload for {payload.age_months}-month old {payload.gender}...")
         
@@ -120,6 +122,20 @@ async def analyze_image(payload: Base64Payload):
             else:
                 status_message = "Healthy Growth (Green)"
 
+        # 🚨 4. SAVE RECORD TO NEON POSTGRESQL DATABASE
+        scan_id = str(uuid.uuid4())
+        current_time = datetime.utcnow().isoformat()
+        
+        db_scan = models.DBScan(
+            id=scan_id,
+            height_cm=calculated_height,
+            status=status_message,
+            timestamp=current_time
+        )
+        db.add(db_scan)
+        db.commit()
+        
+        print(f"💾 Saved to Neon DB -> ID: {scan_id} | Height: {calculated_height}cm | Status: {status_message}")
         print(f"✅ Height: {calculated_height}cm | Z-Score: {z_score}")
         
         return {
